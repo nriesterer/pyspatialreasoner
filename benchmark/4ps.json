@@ -1,0 +1,7 @@
+{
+    "type": "adaption",
+    "data.test": "data/4ps.csv",
+    "models": [
+        "../ccobra_spatialreasoner.py"
+    ]
+}

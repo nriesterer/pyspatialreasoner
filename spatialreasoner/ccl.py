@@ -79,7 +79,6 @@ class ClozureCL():
         # Extract the 64 bit executable
         self.ccl_path = None
         for fname in os.listdir(self.ccl_dir):
-            print(fname)
             fpath = self.ccl_dir + os.sep + fname
             if os.path.isdir(fpath) or fname.endswith('.image'):
                 continue
