@@ -21,23 +21,30 @@ TERMS = [
 class SpatialReasoner():
     def __init__(self, ccl):
         self.logger = logging.getLogger(__name__)
+        self.exec_path = ccl.exec_path()
+
+        # Initialize spatialreasoner
+        self.initialize_spatialreasoner()
+
+    def initialize_spatialreasoner(self):
+        # Instantiate the result queue
+        self.resp_queue = queue.Queue()
 
         # Start the LISP process
         self.proc = subprocess.Popen(
-            [ccl.exec_path()],
+            [self.exec_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT
         )
-
-        # Instantiate the result queue
-        self.resp_queue = queue.Queue()
 
         # Register the readers
         def stdout_reader(proc):
             # Setup thread logger
             logger = logging.getLogger(__name__ + '-reader')
             logger.debug('Starting reader...')
+
+            queue_buffer = []
 
             while True:
                 # Read text
@@ -48,25 +55,32 @@ class SpatialReasoner():
                     logger.debug('termination handling initiated...')
                     break
 
-                if text == '> Error: The value NIL is not of the expected type ARRAY.':
+                if text == '> Type :? for other options.':
                     logger.debug('error encountered. popping...')
-                    self._send(':POP')
+                    self.resp_queue.put('ERROR')
+                    break
 
                 if text == 'PREMISE  FOLLOWS  VALIDLY  FROM  PREVIOUS  PREMISES.':
                     logger.debug('validity detected.')
-                    self.resp_queue.put('true')
+                    queue_buffer.append('true')
 
                 if text == 'PREMISE  IS  INCONSISTENT  WITH  PREVIOUS  PREMISES.':
                     logger.debug('invalidity detected.')
-                    self.resp_queue.put('false')
+                    queue_buffer.append('false')
 
                 if text == 'PREMISE  WAS  PREVIOUSLY  POSSIBLY  TRUE.':
                     logger.debug('indeterminate true detected.')
-                    self.resp_queue.put('indeterminate-true')
+                    queue_buffer.append('indeterminate-true')
 
                 if text == 'PREMISE  WAS  PREVIOUSLY  POSSIBLY  FALSE.':
                     logger.debug('indeterminate false detected.')
-                    self.resp_queue.put('indeterminate-false')
+                    queue_buffer.append('indeterminate-false')
+
+                if text == '"SYNC"':
+                    logger.debug("SYNC detected with queue buffer:%s", queue_buffer)
+                    if queue_buffer:
+                        self.resp_queue.put(queue_buffer)
+                        queue_buffer = []
 
         self.readerstdout = threading.Thread(target=stdout_reader, args=(self.proc,), daemon=True)
         self.readerstdout.start()
@@ -85,7 +99,7 @@ class SpatialReasoner():
         logging.debug('loading spatialreasoner fasl...')
         self._send('(load "{}")'.format(fasl_path))
 
-    def _send(self, cmd):
+    def _send(self, cmd, send_sync=False):
         """ Send a command to the Clozure Common LISP subprocess.
 
         Parameters
@@ -102,6 +116,11 @@ class SpatialReasoner():
         self.proc.stdin.write('{}\n'.format(cmd).encode('ascii'))
         self.proc.stdin.flush()
 
+        if send_sync:
+            self.logger.debug('Send:SYNC')
+            self.proc.stdin.write('{}\n'.format('(prin1 "SYNC")').encode('ascii'))
+            self.proc.stdin.flush()
+
     def terminate(self):
         """ Terminate mReasoner and its parent instance of Clozure Common LISP.
 
@@ -115,7 +134,7 @@ class SpatialReasoner():
         # Terminate Clozure
         self._send('(quit)')
 
-    def query(self, problem, expected_no_responses=1):
+    def query(self, problem):
         self.logger.debug('Querying for problem "%s"', problem)
 
         # Prepare the command to send
@@ -124,13 +143,15 @@ class SpatialReasoner():
         self.logger.debug('cmd: "%s"', cmd)
 
         # Send the command
-        self._send(cmd)
+        self._send(cmd, send_sync=True)
 
         # Wait for the response
-        response_list = []
-        for _ in range(expected_no_responses):
-            resp = self.resp_queue.get()
-            if resp == 'false':
-                return ['false']
-            response_list.append(resp)
-        return response_list
+        resp = self.resp_queue.get()
+
+        if resp == 'ERROR':
+            self.logger.info('Error detected. Restarting...')
+            self.proc.terminate()
+            self.initialize_spatialreasoner()
+            return ['false']
+
+        return resp

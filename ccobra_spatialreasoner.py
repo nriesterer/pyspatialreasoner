@@ -4,7 +4,7 @@ import numpy as np
 import spatialreasoner as sr
 
 class SpatialReasoner(ccobra.CCobraModel):
-    def __init__(self, name='SpatialReasoner', decide_method='skeptical'):
+    def __init__(self, name='SpatialReasoner', decide_method='adapted'):
         super(SpatialReasoner, self).__init__(
             name, ['spatial-relational'], ['verify', 'single-choice'])
 
@@ -39,7 +39,8 @@ class SpatialReasoner(ccobra.CCobraModel):
         }
 
         # Initialize adaption parameters
-        self.last_responses = None
+        self.history = []
+        self.last_responses = []
         self.p_indet_true = 0
         self.p_indet_false = 0
 
@@ -47,6 +48,12 @@ class SpatialReasoner(ccobra.CCobraModel):
         return SpatialReasoner(self.name, self.decide_method)
 
     def end_participant(self, identifier, model_log, **kwargs):
+        print('end')
+
+        if self.decide_method == 'adapted':
+            model_log['p_indet_true'] = self.p_indet_true
+            model_log['p_indet_false'] = self.p_indet_false
+
         self.model.terminate()
 
     def normalize_task(self, task, choice):
@@ -79,18 +86,18 @@ class SpatialReasoner(ccobra.CCobraModel):
     def predict(self, item, **kwargs):
         if item.response_type == 'verify':
             norm_problem = self.normalize_task(item.task, item.choices[0])
-            sub_predictions = self.model.query(norm_problem, len(item.choices[0]))
-            self.last_responses = sub_predictions
+            sub_predictions = self.model.query(norm_problem)
+            self.last_responses = (item.choices[0], sub_predictions)
             prediction = np.all([self.decide(x) for x in sub_predictions])
             return prediction
         elif item.response_type == 'single-choice':
             possible_predictions = []
             for choice in item.choices:
                 norm_problem = self.normalize_task(item.task, choice)
-                prediction = self.model.query(norm_problem, 1)[0]
+                prediction = self.model.query(norm_problem)[0]
                 possible_predictions.append((choice, prediction))
 
-            self.last_responses = possible_predictions
+            self.last_responses = ([x[0] for x in item.choices], [x[1] for x in possible_predictions])
 
             decisions = [(x, self.decide(y)) for x, y in possible_predictions]
             pred_filter = [x for x, y in decisions if y]
@@ -105,10 +112,12 @@ class SpatialReasoner(ccobra.CCobraModel):
             return self.decide_skeptical(prediction)
         if self.decide_method == 'credulous':
             return self.decide_credulous(prediction)
+        if self.decide_method == 'initial':
+            return self.decide_initial(prediction)
         if self.decide_method == 'adapted':
             return self.decide_adapted(prediction)
         else:
-            raise ValueError('Invalid decide method')
+            raise ValueError('Invalid decide method: {}'.format(prediction))
 
     def decide_skeptical(self, prediction):
         if prediction == 'true':
@@ -158,31 +167,64 @@ class SpatialReasoner(ccobra.CCobraModel):
         else:
             raise ValueError('Invalid prediction: {}'.format(prediction))
 
-    def adapt(self, item, truth, **kargs):
-        if self.decide_method != 'adaption':
+    def pre_train_person(self, dataset):
+        if self.decide_method != 'adapted':
             return
 
-        if item.response_type == 'verify':
-            if truth:
-                if 'indeterminate-true' in self.last_responses:
-                    self.p_indet_true += 1
-                if 'indeterminate-false' in self.last_responses:
-                    self.p_indet_false += 1
-            else:
-                if 'indeterminate-true' in self.last_responses:
-                    self.p_indet_true -= 1
-                if 'indeterminate-false' in self.last_responses:
-                    self.p_indet_false -= 1
-        elif item.response_type == 'single-choice':
-            filtered_last = [(x, y) for x, y in self.last_responses if y not in ['true', 'false']]
-            for choice, prediction in filtered_last:
-                if choice == truth:
-                    if prediction == 'indeterminate-false':
-                        self.p_indet_false += 1 - (1 / len(item.choices))
-                    elif prediction == 'indeterminate-true':
-                        self.p_indet_false += 1 - (1 / len(item.choices))
-                else:
-                    if prediction == 'indeterminate-false':
-                        self.p_indet_false -= 1 / len(item.choices)
-                    elif prediction == 'indeterminate-true':
-                        self.p_indet_false -= 1 / len(item.choices)
+        for task_data in dataset:
+            self.predict(task_data['item'])
+            self.adapt(task_data['item'], task_data['response'])
+
+    def adapt(self, item, truth, **kargs):
+        if self.decide_method != 'adapted':
+            return
+
+        self.history.append((truth, self.last_responses))
+
+        if item.response_type == 'single-choice':
+            best_score = -1
+            best_param = None
+
+            for p_indet_true in [-1, 1]:
+                for p_indet_false in [-1, 1]:
+                    self.p_indet_true = p_indet_true
+                    self.p_indet_false = p_indet_false
+
+                    score = 0
+                    for target, tuptup in self.history:
+                        choices, preds = tuptup
+
+                        decisions = [self.decide(x) for x in preds]
+                        true_options = [x for x, y in zip(choices, decisions) if y]
+
+                        if target in true_options:
+                            score += 1 / len(true_options)
+
+                    if score > best_score:
+                        best_score = score
+                        best_param = (p_indet_true, p_indet_false)
+
+            self.p_indet_true = best_param[0]
+            self.p_indet_false = best_param[1]
+        elif item.response_type == 'verify':
+            best_score = -1
+            best_param = None
+
+            for p_indet_true in [-1, 1]:
+                for p_indet_false in [-1, 1]:
+                    self.p_indet_true = p_indet_true
+                    self.p_indet_false = p_indet_false
+
+                    score = 0
+                    for target, tuptup in self.history:
+                        choices, preds = tuptup
+
+                        decisions = [self.decide(x) for x in preds]
+                        if target == np.all(decisions):
+                            score += 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_param = (p_indet_true, p_indet_false)
+
+            self.p_indet_true, self.p_indet_false = best_param
