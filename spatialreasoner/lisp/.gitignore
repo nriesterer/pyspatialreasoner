@@ -1,1 +1,4 @@
 *.dx64fsl
+*.wx64fsl
+*.lx64fsl
+*.tem

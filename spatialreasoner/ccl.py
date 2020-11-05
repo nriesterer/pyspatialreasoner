@@ -18,7 +18,15 @@ DL_URLS = {
 }
 
 EXECUTABLES = {
-    'Windows': "wx86cl64.exe"
+    'Windows': 'wx86cl64.exe',
+    'Darwin': 'dx86cl64',
+    'Linux': 'lx86cl64'
+}
+
+FSL_ENDINGS = {
+    'Windows': 'wx64fsl',
+    'Darwin': 'dx64fsl',
+    'Linux': 'lx64fsl'
 }
 
 class ClozureCL():

@@ -4,6 +4,8 @@ import queue
 import subprocess
 import threading
 
+from . import ccl as cclmod
+
 
 # Term names
 TERMS = [
@@ -21,6 +23,8 @@ TERMS = [
 class SpatialReasoner():
     def __init__(self, ccl):
         self.logger = logging.getLogger(__name__)
+
+        self.ccl = ccl
         self.exec_path = ccl.exec_path()
 
         # Initialize spatialreasoner
@@ -88,7 +92,8 @@ class SpatialReasoner():
         # Create the FASL file if not existent
         lisp_dir = os.path.abspath(os.path.split(os.path.abspath(__file__))[0] + '/lisp')
         lisp_path = os.path.abspath(lisp_dir + '/spatial.lisp')
-        fasl_path = os.path.abspath(lisp_dir + '/spatial.dx64fsl')
+        fasl_path = os.path.abspath(lisp_dir + '/spatial.{}'.format(cclmod.FSL_ENDINGS[self.ccl.system]))
+        fasl_path = fasl_path.replace('\\', '\\\\')
 
         if not os.path.isfile(fasl_path):
             self.logger.debug('compiling the lisp code...')
